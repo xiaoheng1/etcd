@@ -13,6 +13,9 @@ option (gogoproto.goproto_unkeyed_all) = false;
 option (gogoproto.goproto_unrecognized_all) = false;
 option (gogoproto.goproto_sizecache_all) = false;
 
+// 基本就是两大类：
+// 1.日志
+// 2.配置
 enum EntryType {
 	option (versionpb.etcd_version_enum) = "3.0";
 
@@ -21,6 +24,16 @@ enum EntryType {
 	EntryConfChangeV2 = 2 [(versionpb.etcd_version_enum_value)="3.4"]; // corresponds to pb.ConfChangeV2
 }
 
+// 对比 JRaft
+// 都需要存储：
+// 1.term
+// 2.index
+// 3.entryType
+// 4.data
+// 不同点：
+// 在 Jraft 中，在 entry 中还存储了 peers 和 oldPeers. listeners 和 oldListeners.
+// 而在 etcd 中则没有存储.
+// 按照个人理解，在 JRaft 中 LogEntry 存储 peers 和 oldPeers 可能是为了统一条目吧.
 message Entry {
 	option (versionpb.etcd_version_msg) = "3.0";
 
@@ -30,12 +43,15 @@ message Entry {
 	optional bytes      Data  = 4;
 }
 
+// 快照包元数据
+//
 message SnapshotMetadata {
 	optional ConfState conf_state = 1 [(gogoproto.nullable) = false];
 	optional uint64    index      = 2 [(gogoproto.nullable) = false];
 	optional uint64    term       = 3 [(gogoproto.nullable) = false];
 }
 
+// 快照包
 message Snapshot {
 	optional bytes            data     = 1;
 	optional SnapshotMetadata metadata = 2 [(gogoproto.nullable) = false];
@@ -85,12 +101,17 @@ message Message {
 	optional bytes       context     = 12;
 }
 
+// 这个应该指的是当前 Raft 的元数据
+// 1.term 任期
+// 2.vote 给谁投票
+// 3.commit 索引(在 JRaft 中非必须)
 message HardState {
 	optional uint64 term   = 1 [(gogoproto.nullable) = false];
 	optional uint64 vote   = 2 [(gogoproto.nullable) = false];
 	optional uint64 commit = 3 [(gogoproto.nullable) = false];
 }
 
+// 更改集群配置会使用到.
 // ConfChangeTransition specifies the behavior of a configuration change with
 // respect to joint consensus.
 enum ConfChangeTransition {
@@ -112,6 +133,7 @@ enum ConfChangeTransition {
 	ConfChangeTransitionJointExplicit = 2;
 }
 
+// 集群间的配置
 message ConfState {
 	// The voters in the incoming config. (If the configuration is not joint,
 	// then the outgoing config is empty).

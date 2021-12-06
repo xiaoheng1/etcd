@@ -29,12 +29,19 @@ import (
 // walPageBytes is the alignment for flushing records to the backing Writer.
 // It should be a multiple of the minimum sector size so that WAL can safely
 // distinguish between torn writes and ordinary data corruption.
+// walPageBytes 是将记录刷新到支持 Writer 的对齐方式.
+// 它应该是最小扇区大小的倍数. 一般的磁盘一个扇区是 512 bytes.
+// 操作系统的文件系统不是按照扇区来读取数据的，而是按照 block 来的，一个 block 是 4K.
+// 磁盘中扇区是最基本的单位(磁盘上的弧道)
+// 磁盘块是文件系统读写数据的最小单位，也叫磁盘簇，每个磁盘块可以包括2、4、8、16 等个扇区.
+// 页的大小，一般是 4K.
 const walPageBytes = 8 * minSectorSize
 
 type encoder struct {
 	mu sync.Mutex
 	bw *ioutil.PageWriter
 
+	// 用于计算 hash 值.
 	crc       hash.Hash32
 	buf       []byte
 	uint64buf []byte
@@ -59,6 +66,7 @@ func newFileEncoder(f *os.File, prevCrc uint32) (*encoder, error) {
 	return newEncoder(f, prevCrc, int(offset)), nil
 }
 
+// 确保 8 字节对齐.
 func (e *encoder) encode(rec *walpb.Record) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -71,6 +79,8 @@ func (e *encoder) encode(rec *walpb.Record) error {
 		n    int
 	)
 
+	// 总结来说，就是如果 record 的长度大于 buf，则直接写入到 writer.
+	// 否则将 record 写入 buf.
 	if rec.Size() > len(e.buf) {
 		data, err = rec.Marshal()
 		if err != nil {

@@ -43,6 +43,7 @@ const (
 
 var errStopped = errors.New("stopped")
 
+// 通过建立 Http 短链接，主要传输数据量大、发送频率较低的数据，例如：快照数据.
 type pipeline struct {
 	peerID types.ID
 

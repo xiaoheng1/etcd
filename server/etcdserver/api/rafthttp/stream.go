@@ -37,6 +37,10 @@ import (
 	"golang.org/x/time/rate"
 )
 
+// streamReader 负责读取其他 server 发送来的数据，发送到 n.recvc 或 n.propc
+// streamWriter 负责监听要发送给其他 server 的数据
+// server 之间的消息传递并不是简单的 request-response 模型，而是读写分离模型，即每两个 server 之间会建立两条链路.
+// 对于一个 server 来说，一条链路专门用于发送数据，另一条链路专门用来接收刷剧.
 const (
 	streamTypeMessage  streamType = "message"
 	streamTypeMsgAppV2 streamType = "msgappv2"
@@ -159,9 +163,12 @@ func (cw *streamWriter) run() {
 		heartbeatc <-chan time.Time
 		t          streamType
 		enc        encoder
-		flusher    http.Flusher
-		batched    int
+		// 负责刷新底层连接，将数据真正发送出去.
+		flusher http.Flusher
+		batched int
 	)
+	// 发送心跳消息的定时器.
+	// 避免超时选举问题.
 	tickc := time.NewTicker(ConnReadTimeout / 3)
 	defer tickc.Stop()
 	unflushed := 0
@@ -202,6 +209,8 @@ func (cw *streamWriter) run() {
 			heartbeatc, msgc = nil, nil
 
 		case m := <-msgc:
+			// 当能从 msgc 中读取到消息时进入此判断.
+			// 先编码  enc.encode(&m)
 			err := enc.encode(&m)
 			if err == nil {
 				unflushed += m.Size()
@@ -238,6 +247,7 @@ func (cw *streamWriter) run() {
 			t = conn.t
 			switch conn.t {
 			case streamTypeMsgAppV2:
+				// 直接传入的是 conn.Writer.
 				enc = newMsgAppV2Encoder(conn.Writer, cw.fs)
 			case streamTypeMessage:
 				enc = &messageEncoder{w: conn.Writer}
@@ -337,6 +347,7 @@ func (cw *streamWriter) closeUnlocked() bool {
 	return true
 }
 
+// 当当前
 func (cw *streamWriter) attach(conn *outgoingConn) bool {
 	select {
 	case cw.connc <- conn:
@@ -402,6 +413,8 @@ func (cr *streamReader) run() {
 	}
 
 	for {
+		// 调用 streamReader.dial() 主动和对端建立连接
+		// 向对端节点发送一个 GET 请求，然后获取并返回响应的 ReadCloser, 主要用于和对端建立连接.
 		rc, err := cr.dial(t)
 		if err != nil {
 			if err != errUnsupportedStreamType {
@@ -417,6 +430,7 @@ func (cr *streamReader) run() {
 					zap.String("remote-peer-id", cr.peerID.String()),
 				)
 			}
+			// 核心，从底层网络连接读取数据并进行反序列化，之后将得到消息实例写入 recvc 或 propc 通道中，等待 Peer 进行处理.
 			err = cr.decodeLoop(rc, t)
 			if cr.lg != nil {
 				cr.lg.Warn(
@@ -437,6 +451,7 @@ func (cr *streamReader) run() {
 			}
 		}
 		// Wait for a while before new dial attempt
+		// 来到这里说明连接发送错误，等待一会，发起新的 dial 连接尝试，调用 rate.Limiter 可限制拨号频率.
 		err = cr.rl.Wait(cr.ctx)
 		if cr.ctx.Err() != nil {
 			if cr.lg != nil {

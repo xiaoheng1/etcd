@@ -36,6 +36,7 @@ func (rn *RawNode) Bootstrap(peers []Peer) error {
 		return err
 	}
 
+	// 只有新节点才能走 Bootstrap.
 	if lastIndex != 0 {
 		return errors.New("can't bootstrap a nonempty Storage")
 	}
@@ -47,6 +48,7 @@ func (rn *RawNode) Bootstrap(peers []Peer) error {
 
 	// TODO(tbg): remove StartNode and give the application the right tools to
 	// bootstrap the initial membership in a cleaner way.
+	// 将当前任期设置为 1.
 	rn.raft.becomeFollower(1, None)
 	ents := make([]pb.Entry, len(peers))
 	for i, peer := range peers {
@@ -58,6 +60,10 @@ func (rn *RawNode) Bootstrap(peers []Peer) error {
 
 		ents[i] = pb.Entry{Type: pb.EntryConfChange, Term: 1, Index: uint64(i + 1), Data: data}
 	}
+
+	// 将配置添加到集群中
+	// 注意，这里和 JRaft 中不同，在 JRaft 中，所有配置是一个整体
+	// 而这里并不是.
 	rn.raft.raftLog.append(ents...)
 
 	// Now apply them, mainly so that the application can call Campaign

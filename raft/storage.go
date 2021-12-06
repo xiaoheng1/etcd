@@ -43,9 +43,32 @@ var ErrSnapshotTemporarilyUnavailable = errors.New("snapshot is temporarily unav
 // If any Storage method returns an error, the raft instance will
 // become inoperable and refuse to participate in elections; the
 // application is responsible for cleanup and recovery in this case.
+
+// 该接口简介：
+// 核心内容是实现了数据在内存中的存储.
+
+// 疑问：
+// 在 JRaft 中，因为快照包数据在内存中只有一份，如果更新失败了如果处理？？？
+
+// 存储接口，用户侧需要实现该接口.
+// 目前该接口主要是存储 raft 节点临时的数据，例如 Entrys、快照等.
+// 对比 JRaft:
+// 在 JRaft 中，storage 存储主要分为三部分：
+// 1. raft 集群元数据
+// 2. entry 条目
+// 3. 快照包
+
+// 总结：
+// 需要存储的数据都分为三部分：
+// 1. raft 集群元数据
+// 2. entry 条目
+// 3. 快照包
 type Storage interface {
 	// TODO(tbg): split this into two interfaces, LogStorage and StateStorage.
 
+	// 这个应该就是 Raft 集群元数据的概念
+	// HardState 是需要被持久化的
+	// ConfState 是集群间的配置
 	// InitialState returns the saved HardState and ConfState information.
 	InitialState() (pb.HardState, pb.ConfState, error)
 	// Entries returns a slice of log entries in the range [lo,hi).
@@ -73,6 +96,7 @@ type Storage interface {
 
 // MemoryStorage implements the Storage interface backed by an
 // in-memory array.
+// 基于内存的存储实现
 type MemoryStorage struct {
 	// Protects access to all fields. Most methods of MemoryStorage are
 	// run on the raft goroutine, but Append() is run on an application
@@ -89,6 +113,8 @@ type MemoryStorage struct {
 func NewMemoryStorage() *MemoryStorage {
 	return &MemoryStorage{
 		// When starting from scratch populate the list with a dummy entry at term zero.
+		// 创建了一个切片，长度为 1
+		// hardState 和 snapshot 会默认为零值.
 		ents: make([]pb.Entry, 1),
 	}
 }

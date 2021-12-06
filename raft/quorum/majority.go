@@ -22,6 +22,9 @@ import (
 )
 
 // MajorityConfig is a set of IDs that uses majority quorums to make decisions.
+// 主要提供如下几个能力：
+// 1. 获取 committedIndex
+// 2. 获取投票结果
 type MajorityConfig map[uint64]struct{}
 
 func (c MajorityConfig) String() string {
@@ -167,6 +170,10 @@ func (c MajorityConfig) CommittedIndex(l AckedIndexer) Index {
 	// The smallest index into the array for which the value is acked by a
 	// quorum. In other words, from the end of the slice, move n/2+1 to the
 	// left (accounting for zero-indexing).
+	// Peer.Progress.Match 代表了 [0, Match] 的日志全部被 peer 确认收到.
+	// 如何理解了？(n - (n/2 + 1)) 之后的所有 Peer 接收日志的速度都比它快，那么返回当前的索引值就表明
+	// 该索引值被整个集群所接受.
+	// see https://blog.csdn.net/weixin_42663840/article/details/100056484
 	pos := n - (n/2 + 1)
 	return Index(srt[pos])
 }

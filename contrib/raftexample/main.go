@@ -16,18 +16,19 @@ package main
 
 import (
 	"flag"
-	"strings"
-
 	"go.etcd.io/etcd/raft/v3/raftpb"
+	"strings"
 )
 
 func main() {
+	// 定义命令行参数 cluster, id, port, join
 	cluster := flag.String("cluster", "http://127.0.0.1:9021", "comma separated cluster peers")
 	id := flag.Int("id", 1, "node ID")
 	kvport := flag.Int("port", 9121, "key-value server port")
 	join := flag.Bool("join", false, "join an existing cluster")
 	flag.Parse()
 
+	// defer 函数会在 return 之后被调用.
 	proposeC := make(chan string)
 	defer close(proposeC)
 	confChangeC := make(chan raftpb.ConfChange)
@@ -40,6 +41,7 @@ func main() {
 
 	kvs = newKVStore(<-snapshotterReady, proposeC, commitC, errorC)
 
+	// 复用了 confChangeC 通道(channel).
 	// the key-value http handler will propose updates to raft
 	serveHttpKVAPI(kvs, *kvport, confChangeC, errorC)
 }

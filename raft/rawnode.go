@@ -28,6 +28,7 @@ var ErrStepLocalMsg = errors.New("raft: cannot step raft local message")
 // but there is no peer found in raft.prs for that node.
 var ErrStepPeerNotFound = errors.New("raft: cannot step as peer not found")
 
+// RawNode 可以看作是 raft 的 facade.
 // RawNode is a thread-unsafe Node.
 // The methods of this struct correspond to the methods of Node and are described
 // more fully there.
@@ -45,6 +46,7 @@ type RawNode struct {
 // state manually by setting up a Storage that has a first index > 1 and which
 // stores the desired ConfState as its InitialState.
 func NewRawNode(config *Config) (*RawNode, error) {
+	// 根据 config 创建 raft 实例.
 	r := newRaft(config)
 	rn := &RawNode{
 		raft: r,
@@ -55,6 +57,10 @@ func NewRawNode(config *Config) (*RawNode, error) {
 }
 
 // Tick advances the internal logical clock by a single tick.
+// 将物理时间转换为逻辑时间
+// 我们知道 raft 结构中的 tick 其实是函数
+// 对于 follower 而言，这个就是超时选举: tickElection
+// see raft/raft.go:672
 func (rn *RawNode) Tick() {
 	rn.raft.tick()
 }
@@ -149,6 +155,8 @@ func (rn *RawNode) acceptReady(rd Ready) {
 
 // HasReady called when RawNode user need to check if any Ready pending.
 // Checking logic in this method should be consistent with Ready.containsUpdates().
+// 当 RawNode 用户需要检查是否有任何就绪待处理时调用 HasReady.
+// 该方法中的检查逻辑应与 Ready.containsUpdates() 一致.
 func (rn *RawNode) HasReady() bool {
 	r := rn.raft
 	if !r.softState().equal(rn.prevSoftSt) {
@@ -160,6 +168,7 @@ func (rn *RawNode) HasReady() bool {
 	if r.raftLog.hasPendingSnapshot() {
 		return true
 	}
+	// 判断是否有待写入的日志
 	if len(r.msgs) > 0 || len(r.raftLog.unstableEntries()) > 0 || r.raftLog.hasNextEnts() {
 		return true
 	}
@@ -175,6 +184,7 @@ func (rn *RawNode) Advance(rd Ready) {
 	if !IsEmptyHardState(rd.HardState) {
 		rn.prevHardSt = rd.HardState
 	}
+	// 通知底层的 raft 节点.
 	rn.raft.advance(rd)
 }
 

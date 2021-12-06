@@ -19,6 +19,9 @@ import (
 	"strconv"
 )
 
+// quorum 含义：法定人数
+//
+
 // Index is a Raft log position.
 type Index uint64
 

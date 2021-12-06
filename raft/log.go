@@ -21,6 +21,8 @@ import (
 	pb "go.etcd.io/etcd/raft/v3/raftpb"
 )
 
+// 代表了本地日志
+// 在 Raft 集群中，每个节点都可以记录日志
 type raftLog struct {
 	// storage contains all stable entries since the last snapshot.
 	storage Storage
@@ -67,6 +69,8 @@ func newLogWithSize(storage Storage, logger Logger, maxNextEntsSize uint64) *raf
 		panic(err) // TODO(bdarnell)
 	}
 	lastIndex, err := storage.LastIndex()
+	// go 中比较常见的错误处理方法是返回 error 给调用者，但如果是无法恢复的错误，返回 error 也没有意义
+	// 此时可以选择 go die：主动触发 panic.
 	if err != nil {
 		panic(err) // TODO(bdarnell)
 	}

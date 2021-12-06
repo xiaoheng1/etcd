@@ -32,42 +32,70 @@ import (
 	"golang.org/x/time/rate"
 )
 
+// transporter 接口作为 etcd 网络的核心，主要职责维护 Http 长连接，包含连接请求以及处理响应的 handler 逻辑和提供
+// 发送消息的接口，以及包含对每个 peer 节点的维护操作，同时也作为 etcd-raft 模块架起沟通的桥梁.
+
+// Peer 接口是集群具体节点的抽象，在分布式系统中的通讯说到底就是节点之间的通信
+
+// 在往下一层网络 etcd 针对不同的消息类型所携带的数据大小不同，分出两种不同的传输通道 stream 和 pipeline.
+// 各自特点：
+// stream: 点到点之间维护 http 长连接，主要传输数据量较小、比较频繁的数据，例如：追加日志、心跳等.
+// pipeline: 点到点之间短连接，用户即关闭，主要传输数据量较大、发送频率较低的消息，例如快照消息等.
+
+// stream 消息通道是在节点启动后，主动与集群中的其他节点建立的，每个 stream 消息通道有两个关联的后台 goroutine, 其中
+// 一个启动 streamReader 主动发起 dial 建立关联的 http 连接，并从连接上读取数据，另外一个后台 goroutine 启动 streamWriter
+// 在建立其连接之后，负责发送数据.
+
+// pipeline 消息通道则使用短链接，启用 4 个线程去发送数据.
+
+// etcd 网络层的底层依赖围绕 golang net 包来实现的.
 type Raft interface {
+	// 将指定的消息实例传递到底层的 etcd-raft 模块进行处理
 	Process(ctx context.Context, m raftpb.Message) error
+	// 检测指定节点是否从当前集群中移除
 	IsIDRemoved(id uint64) bool
+	// 通知底层 etcd-raft 模块，当前节点与指定节点无法联通
 	ReportUnreachable(id uint64)
+	// 通知底层 etcd-raft 模块，快照数据是否成功发送
 	ReportSnapshot(id uint64, status raft.SnapshotStatus)
 }
 
+// Transporter 是最上层的 API. 更加贴近用户侧.
 type Transporter interface {
 	// Start starts the given Transporter.
 	// Start MUST be called before calling other functions in the interface.
+	// 初始化操作
 	Start() error
 	// Handler returns the HTTP handler of the transporter.
 	// A transporter HTTP handler handles the HTTP requests
 	// from remote peers.
 	// The handler MUST be used to handle RaftPrefix(/raft)
 	// endpoint.
+	// 创建 handler 实例并关联到具体的 url 上
 	Handler() http.Handler
 	// Send sends out the given messages to the remote peers.
 	// Each message has a To field, which is an id that maps
 	// to an existing peer in the transport.
 	// If the id cannot be found in the transport, the message
 	// will be ignored.
+	// 发送消息
 	Send(m []raftpb.Message)
 	// SendSnapshot sends out the given snapshot message to a remote peer.
 	// The behavior of SendSnapshot is similar to Send.
+	// 发送快照数据
 	SendSnapshot(m snap.Message)
 	// AddRemote adds a remote with given peer urls into the transport.
 	// A remote helps newly joined member to catch up the progress of cluster,
 	// and will not be used after that.
 	// It is the caller's responsibility to ensure the urls are all valid,
 	// or it panics.
+	// 在集群新增一个节点时，其他节点会通过该方法添加新加入的节点信息
 	AddRemote(id types.ID, urls []string)
 	// AddPeer adds a peer with given peer urls into the transport.
 	// It is the caller's responsibility to ensure the urls are all valid,
 	// or it panics.
 	// Peer urls are used to connect to the remote peer.
+	// Peer 接口是当前节点对集群中的其他节点的抽象，而结构体 peer 是 Peer 接口的一个具体实现
 	AddPeer(id types.ID, urls []string)
 	// RemovePeer removes the peer with given id.
 	RemovePeer(id types.ID)
@@ -154,6 +182,9 @@ func (t *Transport) Start() error {
 	return nil
 }
 
+// url 为 /raft，则使用 pipelineHandler 处理收到的快照数据
+// url 为 /raft/stream, 则使用 streamHandler 处理收到的消息
+// url 为 /raft/snapshot, 则使用 snapshotHandler 处理收到的快照数据.
 func (t *Transport) Handler() http.Handler {
 	pipelineHandler := newPipelineHandler(t, t.Raft, t.ClusterID)
 	streamHandler := newStreamHandler(t, t, t.Raft, t.ID, t.ClusterID)
@@ -172,6 +203,7 @@ func (t *Transport) Get(id types.ID) Peer {
 	return t.peers[id]
 }
 
+// 上层应用通过 Ready 和 Raft 模块解偶.
 func (t *Transport) Send(msgs []raftpb.Message) {
 	for _, m := range msgs {
 		if m.To == 0 {
@@ -309,7 +341,12 @@ func (t *Transport) AddPeer(id types.ID, us []string) {
 		}
 	}
 	fs := t.LeaderStats.Follower(id.String())
+	// 1.开启两个协程监听
+	// 2.开启 msgAppReader
+	// 3.主动和对端建立连接，从网络中读取数据并解码
+	// 4.如果接收到的是 MsgProp 类型的消息，则转交给 propc，否则转交给 recvc.
 	t.peers[id] = startPeer(t, urls, id, fs)
+	// 用于探测 pipeline 通道是否可用.
 	addPeerToProber(t.Logger, t.pipelineProber, id.String(), us, RoundTripperNameSnapshot, rttSec)
 	addPeerToProber(t.Logger, t.streamProber, id.String(), us, RoundTripperNameRaftMessage, rttSec)
 

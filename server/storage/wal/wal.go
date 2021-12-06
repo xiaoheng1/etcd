@@ -70,6 +70,16 @@ var (
 // A newly created WAL is in append mode, and ready for appending records.
 // A just opened WAL is in read mode, and ready for reading records.
 // The WAL will be ready for appending after reading out all the previous records.
+// WAL 是稳定存储的逻辑表示. WAL 处于读取模式或附加模式，但不能同时处于读取模式或附加模式.
+// 新创建的 WAL 处于附加模式，并准备好追加记录. 刚刚打开的 WAL 处于读取模式，并准备好阅读记录.
+// 在读取出所有以前的记录后，WAL 将准备好追加.
+// $seq-$index.wal 的格式存储. 最初的 wal 文件是 0000000000000-0000000000000.wal, 表示是所有的 wal 文件中的第 0 个.
+// 运行一段时间后可能需要进行 日志切分，把新的条目放到一个新的 WAL 文件中.
+// - 前面的数字是每次切分后自增 1，而 - 后面的数字则是根据实际存储的 Raft 起始状态来定.
+
+// 对外提供 WAL 日志文件管理的核心 API.
+// 在 WAL 日志文件中，日志记录是通过 Record 表示的，该结构体通过 pb 生成，主要用于序列化和反序列化日志.
+
 type WAL struct {
 	lg *zap.Logger
 
@@ -136,6 +146,7 @@ func Create(lg *zap.Logger, dirpath string, metadata []byte) (*WAL, error) {
 		)
 		return nil, err
 	}
+	// 移动光标到文件末尾.
 	if _, err = f.Seek(0, io.SeekEnd); err != nil {
 		lg.Warn(
 			"failed to seek an initial WAL file",
@@ -144,6 +155,7 @@ func Create(lg *zap.Logger, dirpath string, metadata []byte) (*WAL, error) {
 		)
 		return nil, err
 	}
+	// 默认 64M
 	if err = fileutil.Preallocate(f.File, SegmentSizeBytes, true); err != nil {
 		lg.Warn(
 			"failed to preallocate an initial WAL file",

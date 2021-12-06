@@ -27,7 +27,13 @@ import (
 // NB(tbg): Progress is basically a state machine whose transitions are mostly
 // strewn around `*raft.raft`. Additionally, some fields are only used when in a
 // certain State. All of this isn't ideal.
+// 什么是 Progress 了？
+// 从字面意思理解，Progress 是进度
+// Progress 代表了 Leader 视角的 Follower 进度，Leader 拥有所有 Follower 的进度，并根据其进度向 Follower
+// 发送日志. 进度基本是一个状态机，其转换主要散步在 *raft.raft 周围
 type Progress struct {
+	// Match 表示 Follower 已经跟 Leader 同步的最大 index.
+	// Next 下次复制的索引位置
 	Match, Next uint64
 	// State defines how the leader should interact with the follower.
 	//
@@ -40,6 +46,8 @@ type Progress struct {
 	//
 	// When in StateSnapshot, leader should have sent out snapshot
 	// before and stops sending any replication message.
+	// 当前节点状态主要有三种，分别是：复制、探测、快照复制
+	// 当前类似于 Replicator 的状态.
 	State StateType
 
 	// PendingSnapshot is used in StateSnapshot.
@@ -47,6 +55,7 @@ type Progress struct {
 	// index of the snapshot. If pendingSnapshot is set, the replication process of
 	// this Progress will be paused. raft will not resend snapshot until the pending one
 	// is reported to be failed.
+	// 正在发送快照
 	PendingSnapshot uint64
 
 	// RecentActive is true if the progress is recently active. Receiving any messages
@@ -54,11 +63,13 @@ type Progress struct {
 	// RecentActive can be reset to false after an election timeout.
 	//
 	// TODO(tbg): the leader should always have this set to true.
+	// 节点是否活跃(有任何节点响应都会设置为 true)
 	RecentActive bool
 
 	// ProbeSent is used while this follower is in StateProbe. When ProbeSent is
 	// true, raft should pause sending replication message to this peer until
 	// ProbeSent is reset. See ProbeAcked() and IsPaused().
+	// 正在探测(探测的意思是 Leader 不知道 Follower 下一个复制的 Next 位置，需要通过回退 Next 来找到 Follower 真实的 Next 位置)
 	ProbeSent bool
 
 	// Inflights is a sliding window for the inflight messages.
@@ -73,6 +84,7 @@ type Progress struct {
 	// When a leader receives a reply, the previous inflights should
 	// be freed by calling inflights.FreeLE with the index of the last
 	// received entry.
+	// 记录已发送，但未得到节点响应的消息
 	Inflights *Inflights
 
 	// IsLearner is true if this progress is tracked for a learner.
@@ -105,6 +117,7 @@ func min(a, b uint64) uint64 {
 // ProbeAcked is called when this peer has accepted an append. It resets
 // ProbeSent to signal that additional append messages should be sent without
 // further delay.
+// 相当于重置了探针. 即：不需要发送探针到 follower 去寻找 log index.
 func (pr *Progress) ProbeAcked() {
 	pr.ProbeSent = false
 }
@@ -141,6 +154,7 @@ func (pr *Progress) BecomeSnapshot(snapshoti uint64) {
 // MaybeUpdate is called when an MsgAppResp arrives from the follower, with the
 // index acked by it. The method returns false if the given n index comes from
 // an outdated message. Otherwise it updates the progress and returns true.
+// 当一个 MsgAppResp 从 follower 发送过来.
 func (pr *Progress) MaybeUpdate(n uint64) bool {
 	var updated bool
 	if pr.Match < n {
@@ -167,6 +181,7 @@ func (pr *Progress) OptimisticUpdate(n uint64) { pr.Next = n + 1 }
 //
 // If the rejection is genuine, Next is lowered sensibly, and the Progress is
 // cleared for sending log entries.
+// MaybeDecrTo 将 Progress 调整为收到 MsgApp 拒绝.
 func (pr *Progress) MaybeDecrTo(rejected, matchHint uint64) bool {
 	if pr.State == StateReplicate {
 		// The rejection must be stale if the progress has matched and "rejected"

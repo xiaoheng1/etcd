@@ -25,16 +25,20 @@ var defaultBufferBytes = 128 * 1024
 type PageWriter struct {
 	w io.Writer
 	// pageOffset tracks the page offset of the base of the buffer
+	// 一页中的偏移量.
 	pageOffset int
 	// pageBytes is the number of bytes per page
 	pageBytes int
 	// bufferedBytes counts the number of bytes pending for write in the buffer
 	bufferedBytes int
 	// buf holds the write buffer
+	// buf 保存写缓冲区
 	buf []byte
 	// bufWatermarkBytes is the number of bytes the buffer can hold before it needs
 	// to be flushed. It is less than len(buf) so there is space for slack writes
 	// to bring the writer to page alignment.
+	// bufWatermarkBytes 是缓冲区在需要刷新前可以容纳的字节数. 它小于 len(buf) 因此
+	// 有空间用于松弛写入以使写入器进行对齐.
 	bufWatermarkBytes int
 }
 
@@ -42,15 +46,36 @@ type PageWriter struct {
 // to write per page. pageOffset is the starting offset of io.Writer.
 func NewPageWriter(w io.Writer, pageBytes, pageOffset int) *PageWriter {
 	return &PageWriter{
-		w:                 w,
-		pageOffset:        pageOffset,
-		pageBytes:         pageBytes,
+		w:          w,
+		pageOffset: pageOffset,
+		pageBytes:  pageBytes,
+		// 可能是为了对齐.
+		// TODO: 待确定
 		buf:               make([]byte, defaultBufferBytes+pageBytes),
 		bufWatermarkBytes: defaultBufferBytes,
 	}
 }
 
+// 其实这个方法，最最核心的是对缓冲区的数据进行处理. 核心思路就是 buf(缓冲区) 对齐后就往磁盘中刷新.
+// 1.当写入数据 + 缓存小于水位的时候，直接写入
+// 2.当写入数据 + 缓存大于水位的是你，分多种情况：
+//  (1.1) 如果当前缓冲区未对齐，且未对齐容量 > 当前写入数据，写入缓冲区.
+//  (1.2) 如果当前缓冲区未对齐，且未对齐容量 <= 当前写入数据，写入缓冲区. 这时候会将 p 的一部分数据拷贝到缓冲区.
+// 3.不论是那种情况，缓冲区都是对齐的，直接刷新.
+
+// 补充：
+// Buffer IO 大多数文件系统默认 IO 都是 BufferIO. 在 Linux 的 Buffer IO 机制中，
+// 操作系统会将 IO 的数据缓存在文件系统的页缓存(page cache) 中.
+// 例如 FileInputStream/FileOutputStream/RandomAccessFile/FileChannel.
+
+// 直接写 PageCache MMP.
+
+// 为什么要为某个文件快速地分配固定大小的磁盘空间？
+// 1.可以让文件尽可能的占用连续的磁盘扇区，减少后续写入和读取文件时的磁盘训道开销.
+// 2.迅速占用磁盘空间，防止使用过程中所需空间不足.
 func (pw *PageWriter) Write(p []byte) (n int, err error) {
+	// 当前缓存的字节数  + 待写入的字节数 小于最高水位，说明是安全的
+	// 直接写入.
 	if len(p)+pw.bufferedBytes <= pw.bufWatermarkBytes {
 		// no overflow
 		copy(pw.buf[pw.bufferedBytes:], p)
@@ -58,7 +83,10 @@ func (pw *PageWriter) Write(p []byte) (n int, err error) {
 		return len(p), nil
 	}
 	// complete the slack page in the buffer if unaligned
+	// len(p) + bufferedBytes > bufWatermarkBytes 超过了水位上限.
+	// 如果未对齐，则完成缓冲区中的松弛页面.
 	slack := pw.pageBytes - ((pw.pageOffset + pw.bufferedBytes) % pw.pageBytes)
+	// 不想等，slack 则是需要被填充的部分.
 	if slack != pw.pageBytes {
 		partial := slack > len(p)
 		if partial {
@@ -72,6 +100,7 @@ func (pw *PageWriter) Write(p []byte) (n int, err error) {
 		p = p[slack:]
 		if partial {
 			// avoid forcing an unaligned flush
+			// 避免强制未对齐的刷新.
 			return n, nil
 		}
 	}
@@ -80,6 +109,7 @@ func (pw *PageWriter) Write(p []byte) (n int, err error) {
 		return n, err
 	}
 	// directly write all complete pages without copying
+	// 如果满足对齐，则直接写入.
 	if len(p) > pw.pageBytes {
 		pages := len(p) / pw.pageBytes
 		c, werr := pw.w.Write(p[:pages*pw.pageBytes])

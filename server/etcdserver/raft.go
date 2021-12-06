@@ -137,6 +137,10 @@ func newRaftNode(cfg raftNodeConfig) *raftNode {
 		stopped:    make(chan struct{}),
 		done:       make(chan struct{}),
 	}
+	// GO 语言的标准库里提供两种类型的计时器 Timer 和 Ticker.
+	// Timer 经过指定的 duration 时间后会被触发，往自己的时间 channel 发送当前时间，此后 Timer 不再计时.
+	// Ticker 则是每隔 duration 时间都会吧当前时间点发送到自己的时间 channel, 利用计时器的时间 channel 可以实现很多
+	// 与计时相关的功能.
 	if r.heartbeat == 0 {
 		r.ticker = &time.Ticker{}
 	} else {

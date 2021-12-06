@@ -27,9 +27,12 @@ import (
 
 // a key-value store backed by raft
 type kvstore struct {
-	proposeC    chan<- string // channel for proposing updates
-	mu          sync.RWMutex
-	kvStore     map[string]string // current committed key-value pairs
+	proposeC chan<- string // channel for proposing updates
+	// sync.Mutex 不区分读写锁，只有 Lock() 和 Lock() 之间才会导致阻塞的情况.
+	// mutex 不会和 goroutine 进行关联.
+	mu      sync.RWMutex
+	kvStore map[string]string // current committed key-value pairs
+	// 操作 snapshot 的类，这个类不关数据格式，接收参数时 bytes.
 	snapshotter *snap.Snapshotter
 }
 

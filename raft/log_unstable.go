@@ -20,8 +20,16 @@ import pb "go.etcd.io/etcd/raft/v3/raftpb"
 // Note that unstable.offset may be less than the highest log
 // position in storage; this means that the next write to storage
 // might need to truncate the log before persisting unstable.entries.
+
+// unstable 采用内存数据维护其中所有的 entry
+// 对于 leader 节点而言，它维护了客户端请求的 entry 记录
+// 对于 Follower 节点而言，它维护了从 leader 节点复制来的 entry 记录.
+// 无论是 leader 节点还是 follower 节点，对于刚刚收到的记录，都会先存储在 unstable 结构上.
+// 然后按照 raft 协议，将 unstable 缓存的记录交给上层模块进行处理. 上层模块会将这些记录发送到集群其他节点活进行保存(写入 storage 中)
+// 之后，上层模块会调用 Advance() 方法通知底层的 unstable 中的记录删除
 type unstable struct {
 	// the incoming unstable snapshot, if any.
+	// 这个应该是在安装快照包的时候才会有
 	snapshot *pb.Snapshot
 	// all entries that have not yet been written to storage.
 	entries []pb.Entry
@@ -32,6 +40,9 @@ type unstable struct {
 
 // maybeFirstIndex returns the index of the first possible entry in entries
 // if it has a snapshot.
+// TODO: 为啥不从 entries 中取第一个的索引了？？？？
+// 好想有点明白这个方法为啥这么写了：
+// 因为如果快照为空，说明要从 storage 中获取第一个 index 了.
 func (u *unstable) maybeFirstIndex() (uint64, bool) {
 	if u.snapshot != nil {
 		return u.snapshot.Metadata.Index + 1, true

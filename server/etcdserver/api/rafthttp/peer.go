@@ -60,24 +60,38 @@ var (
 	ConnWriteTimeout = DefaultConnWriteTimeout
 )
 
+// 三级结构
+// 		Transport
+// 	  Peer     Peer
+//  stream      pipeline
+//    golang net 库
+// see https://blog.csdn.net/m0_37731056/article/details/108649231
 type Peer interface {
 	// send sends the message to the remote peer. The function is non-blocking
 	// and has no promise that the message will be received by the remote.
 	// When it fails to send message out, it will report the status to underlying
 	// raft.
+	// send 将消息发送到远程对方. 此函数是非阻塞的，并且不保证消息将被远程接收.
+	// 当它发送消息失败时，它会将状态报告给底层 raft.
+	// 是不是有一个疑问，为啥发送完消息后没有回调？
+	//
 	send(m raftpb.Message)
 
 	// sendSnap sends the merged snapshot message to the remote peer. Its behavior
 	// is similar to send.
+	// 发送快照包
 	sendSnap(m snap.Message)
 
 	// update updates the urls of remote peer.
+	// 更新对应节点暴露的 URL 地址.
 	update(urls types.URLs)
 
 	// attachOutgoingConn attaches the outgoing connection to the peer for
 	// stream usage. After the call, the ownership of the outgoing
 	// connection hands over to the peer. The peer will close the connection
 	// when it is no longer used.
+	// 将指定的连接与当前的 Peer 绑定，Peer 会将该连接作为 Stream 消息通道使用
+	// 当 Peer 不再使用该连接时，会将该连接关闭.
 	attachOutgoingConn(conn *outgoingConn)
 	// activeSince returns the time that the connection with the
 	// peer becomes active.
@@ -111,17 +125,27 @@ type peer struct {
 
 	picker *urlPicker
 
+	// V2 版本负责向 Stream 消息通道写入消息
 	msgAppV2Writer *streamWriter
-	writer         *streamWriter
-	pipeline       *pipeline
-	snapSender     *snapshotSender // snapshot sender to send v3 snapshot messages
+	// V3 版本负责向 Stream 消息通道写入消息
+	writer *streamWriter
+	// pipeline 消息通道
+	pipeline *pipeline
+	// 负责发送快照数据
+	snapSender *snapshotSender // snapshot sender to send v3 snapshot messages
+	// V2 版本负责从 Stream 消息通道读取消息
 	msgAppV2Reader *streamReader
-	msgAppReader   *streamReader
+	// V3 版本负责从 Stream 消息通道读取消息
+	msgAppReader *streamReader
 
+	// 从 Stream 消息通道中读取消息后，会通过该通道将消息交给 Raft 接口，然后由它返回给底层 etcd-raft 模块进行处理
 	recvc chan raftpb.Message
+	// 从 Stream 消息通道中读取到 MsgProp 类型的消息之后，会通过该通道将 MsgProp 消息交给 Raft 接口，然后
+	// 由它返回给底层 etcd-raft 模块进行处理
 	propc chan raftpb.Message
 
-	mu     sync.Mutex
+	mu sync.Mutex
+	// 是否暂停向对应的节点发送消息
 	paused bool
 
 	cancel context.CancelFunc // cancel pending works in go routine created by peer.
@@ -348,6 +372,7 @@ func (p *peer) stop() {
 
 // pick picks a chan for sending the given message. The picked chan and the picked chan
 // string name are returned.
+// pick 选择一个 chan 来发送给定的消息. 返回选择的 chan 和选择 chan 字符串名称.
 func (p *peer) pick(m raftpb.Message) (writec chan<- raftpb.Message, picked string) {
 	var ok bool
 	// Considering MsgSnap may have a big size, e.g., 1G, and will block

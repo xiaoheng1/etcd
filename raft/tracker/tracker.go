@@ -24,6 +24,7 @@ import (
 )
 
 // Config reflects the configuration tracked in a ProgressTracker.
+// Config 反映了在 ProcessTracker 中跟踪的配置.
 type Config struct {
 	Voters quorum.JointConfig
 	// AutoLeave is true if the configuration is joint and a transition to the
@@ -114,13 +115,18 @@ func (c *Config) Clone() Config {
 // ProgressTracker tracks the currently active configuration and the information
 // known about the nodes and learners in it. In particular, it tracks the match
 // index for each peer which in turn allows reasoning about the committed index.
+// ProgressTracker 跟踪当前活动的配置以及其中的节点和学习者的已知信息.
+// 特别是，它跟踪每个对等点的匹配索引，这反过来又允许对提交的索引进行推理.
 type ProgressTracker struct {
 	Config
 
+	// 节点状态集合
 	Progress ProgressMap
 
+	// 节点投票集合
 	Votes map[uint64]bool
 
+	// 当前节点最大已发送，但未响应的消息 ID
 	MaxInflight int
 }
 
@@ -264,6 +270,9 @@ func (p *ProgressTracker) RecordVote(id uint64, v bool) {
 
 // TallyVotes returns the number of granted and rejected Votes, and whether the
 // election outcome is known.
+// 这里和 JRaft 不同，JRaft 将网络部分合并进 Raft 库了，而 etcd 则没有
+// 所以这里看着会很奇怪.
+// 计算是否获得成功.
 func (p *ProgressTracker) TallyVotes() (granted int, rejected int, _ quorum.VoteResult) {
 	// Make sure to populate granted/rejected correctly even if the Votes slice
 	// contains members no longer part of the configuration. This doesn't really

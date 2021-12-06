@@ -23,12 +23,14 @@ import (
 
 type SnapshotStatus int
 
+// 快照包 load、dump 状态.
 const (
 	SnapshotFinish  SnapshotStatus = 1
 	SnapshotFailure SnapshotStatus = 2
 )
 
 var (
+	// 集群内需要被持久化的属性
 	emptyState = pb.HardState{}
 
 	// ErrStopped is returned by methods on Nodes that have been stopped.
@@ -37,11 +39,14 @@ var (
 
 // SoftState provides state that is useful for logging and debugging.
 // The state is volatile and does not need to be persisted to the WAL.
+// SoftState 提供对 log 和 debug 非常有用的状态.
+// 状态是易变的并且不需要被持久化到 WAL.
 type SoftState struct {
 	Lead      uint64 // must use atomic operations to access; keep 64-bit aligned.
 	RaftState StateType
 }
 
+// 判断两个状态是否相等.
 func (a *SoftState) equal(b *SoftState) bool {
 	return a.Lead == b.Lead && a.RaftState == b.RaftState
 }
@@ -49,39 +54,49 @@ func (a *SoftState) equal(b *SoftState) bool {
 // Ready encapsulates the entries and messages that are ready to read,
 // be saved to stable storage, committed or sent to other peers.
 // All fields in Ready are read-only.
+// Ready 封装了准备读取、保存到稳定存储、提交或发送到其他对等节点的条目和消息.
+// Ready 中的所有字段都是只读的.
+// Ready 实例只是用来传递数据的.
 type Ready struct {
 	// The current volatile state of a Node.
 	// SoftState will be nil if there is no update.
 	// It is not required to consume or store SoftState.
+	// 封装了当前集群的 Leader 节点 ID 以及当前节点的角色.
 	*SoftState
 
 	// The current state of a Node to be saved to stable storage BEFORE
 	// Messages are sent.
 	// HardState will be equal to empty state if there is no update.
+	// 封装了当前节点的任期号，当前节点将票投给谁了以及当前节点 raftLog 的已提交位置.
 	pb.HardState
 
 	// ReadStates can be used for node to serve linearizable read requests locally
 	// when its applied index is greater than the index in ReadState.
 	// Note that the readState will be returned when raft receives msgReadIndex.
 	// The returned is only valid for the request that requested to read.
+	// 记录当前节点中等待处理的只读请求
 	ReadStates []ReadState
 
 	// Entries specifies entries to be saved to stable storage BEFORE
 	// Messages are sent.
+	// 该字段的 entry 是从 unstable 中读取出来的，上层模块会将其保存在 Storage 中.
 	Entries []pb.Entry
 
 	// Snapshot specifies the snapshot to be saved to stable storage.
+	// 待持久化的快照数据.
 	Snapshot pb.Snapshot
 
 	// CommittedEntries specifies entries to be committed to a
 	// store/state-machine. These have previously been committed to stable
 	// store.
+	// 已提交、待应用的 entry，这些记录之前已经保存在 Storage 中了.
 	CommittedEntries []pb.Entry
 
 	// Messages specifies outbound messages to be sent AFTER Entries are
 	// committed to stable storage.
 	// If it contains a MsgSnap message, the application MUST report back to raft
 	// when the snapshot has been received or has failed by calling ReportSnapshot.
+	// 保存了当前节点中等待发送到集群其他节点的 Message 消息.
 	Messages []pb.Message
 
 	// MustSync indicates whether the HardState and Entries must be synchronously
@@ -112,6 +127,8 @@ func (rd Ready) containsUpdates() bool {
 // appliedCursor extracts from the Ready the highest index the client has
 // applied (once the Ready is confirmed via Advance). If no information is
 // contained in the Ready, returns zero.
+// appliedCursor 从 Ready 中提取客户端应用的最高索引(一旦 Ready 通过 Advance 确认)
+// 如果 Ready 中不包含任何信息，则返回 0.
 func (rd Ready) appliedCursor() uint64 {
 	if n := len(rd.CommittedEntries); n > 0 {
 		return rd.CommittedEntries[n-1].Index
@@ -123,14 +140,27 @@ func (rd Ready) appliedCursor() uint64 {
 }
 
 // Node represents a node in a raft cluster.
+// 代表了一个在 raft 集群中的一个节点.
+// raft 结构体实现了 raft 协议中最核心的内容，它也是整个 etcd-raft 的核心.
+// 但是它并没有实现网络传输、对外易用的 API、持久化存储等.
+// node 是在 raft 之上的一层封装. 对外提供相等简单的 API.
+// 整体上看，Node 等价与 JRaft 的 NodeImpl. 相当于对外提供服务.
 type Node interface {
 	// Tick increments the internal logical clock for the Node by a single tick. Election
 	// timeouts and heartbeat timeouts are in units of ticks.
+	// 抽象了 Tick 函数.
+	// 在介绍 Raft 结构体的时候，提到了选举计时器和心跳计时器两种. 也提到过这两个计时器的时间是逻辑时间，
+	// 并不是真是世界中的时间刻度. Tick() 方法就是用来推进上述两种计时器的.
 	Tick()
 	// Campaign causes the Node to transition to candidate state and start campaigning to become leader.
+	// 当选举计时器超时后，会调用 Campaign() 方法将当前节点切换成 Candidate(或是 PreCandidate)
+	// 底层就是通过发送 MsgHup 消息实现的
+	// Campaign 是竞选的意思.
 	Campaign(ctx context.Context) error
 	// Propose proposes that data be appended to the log. Note that proposals can be lost without
 	// notice, therefore it is user's job to ensure proposal retries.
+	// 接收到 Client 发送过来的写请求后，Node 实例会调用 Propose() 方法进行处理，底层就是通过发送
+	// MsgProp 消息实现的.
 	Propose(ctx context.Context, data []byte) error
 	// ProposeConfChange proposes a configuration change. Like any proposal, the
 	// configuration change may be dropped with or without an error being
@@ -144,9 +174,13 @@ type Node interface {
 	// message is only allowed if all Nodes participating in the cluster run a
 	// version of this library aware of the V2 API. See pb.ConfChangeV2 for
 	// usage details and semantics.
+	// Client 除了会发送读写请求，还会发送修改集群配置的请求(例如：新增集群间节点的请求)
+	// 这种请求，Node 会调用 ProposeConfChange() 方法进行处理，底层通过发送 MsgProp 消息实现.
+	// 不过其中记录的 entry 为 EntryConfChange 类型.
 	ProposeConfChange(ctx context.Context, cc pb.ConfChangeI) error
 
 	// Step advances the state machine using the given message. ctx.Err() will be returned, if any.
+	// 当前节点收到其他节点的消息时，会通过 Step() 方法将消息交给底层的 raft 实例处理
 	Step(ctx context.Context, msg pb.Message) error
 
 	// Ready returns a channel that returns the current point-in-time state.
@@ -154,6 +188,9 @@ type Node interface {
 	//
 	// NOTE: No committed entries from the next Ready may be applied until all committed entries
 	// and snapshots from the previous one have finished.
+	// Ready() 方法返回的是一个 channel. 通过该 channel 返回的 ready 实例中封装了底层 raft 实例相关状态数据.
+	// 例如：需要发送到其他节点的消息，交给上层处理的 entry 等.
+	// 这是 etcd-raft 模块与上层模块交互的主要方式
 	Ready() <-chan Ready
 
 	// Advance notifies the Node that the application has saved progress up to the last Ready.
@@ -165,6 +202,7 @@ type Node interface {
 	// commands. For example. when the last Ready contains a snapshot, the application might take
 	// a long time to apply the snapshot data. To continue receiving Ready without blocking raft
 	// progress, it can call Advance before finishing applying the last ready.
+	// 当上层模块处理完从上述 channel 返回的 Ready 实例后，需要调用 Advance() 通知 etcd-raft 模块返回新的 Ready 实例
 	Advance()
 	// ApplyConfChange applies a config change (previously passed to
 	// ProposeConfChange) to the node. This must be called whenever a config
@@ -174,9 +212,11 @@ type Node interface {
 	//
 	// Returns an opaque non-nil ConfState protobuf which must be recorded in
 	// snapshots.
+	// 在收到集群配置请求时，会调用 ApplyConfChange() 方法处理
 	ApplyConfChange(cc pb.ConfChangeI) *pb.ConfState
 
 	// TransferLeadership attempts to transfer leadership to the given transferee.
+	// TransferLeadership() 方法用于 Leader 节点转移
 	TransferLeadership(ctx context.Context, lead, transferee uint64)
 
 	// ReadIndex request a read state. The read state will be set in the ready.
@@ -185,11 +225,14 @@ type Node interface {
 	// processed safely. The read state will have the same rctx attached.
 	// Note that request can be lost without notice, therefore it is user's job
 	// to ensure read index retries.
+	// 用于处理只读请求
 	ReadIndex(ctx context.Context, rctx []byte) error
 
 	// Status returns the current status of the raft state machine.
+	// 返回当前节点的运行状态
 	Status() Status
 	// ReportUnreachable reports the given node is not reachable for the last send.
+	// 通过 ReportUnreachable 方法通知底层 raft 实例，当前节点无法和指定节点通讯.
 	ReportUnreachable(id uint64)
 	// ReportSnapshot reports the status of the sent snapshot. The id is the raft ID of the follower
 	// who is meant to receive the snapshot, and the status is SnapshotFinish or SnapshotFailure.
@@ -201,8 +244,10 @@ type Node interface {
 	// updates from the leader. Therefore, it is crucial that the application ensures that any
 	// failure in snapshot sending is caught and reported back to the leader; so it can resume raft
 	// log probing in the follower.
+	// ReportSnapshot() 用于通知底层 raft 实例上次发送快照的结果
 	ReportSnapshot(id uint64, status SnapshotStatus)
 	// Stop performs any necessary termination of the Node.
+	// 关闭当前节点
 	Stop()
 }
 
@@ -215,6 +260,7 @@ type Peer struct {
 // It appends a ConfChangeAddNode entry for each given peer to the initial log.
 //
 // Peers must not be zero length; call RestartNode in that case.
+// 当集群中的节点初次启动时会通过 StartNode 函数创建对应的 node 实例和底层的 raft 实例.
 func StartNode(c *Config, peers []Peer) Node {
 	if len(peers) == 0 {
 		panic("no peers given; use RestartNode instead")
@@ -255,16 +301,26 @@ type msgWithResult struct {
 
 // node is the canonical implementation of the Node interface
 type node struct {
-	propc      chan msgWithResult
-	recvc      chan pb.Message
-	confc      chan pb.ConfChangeV2
+	// 用于接收 MsgProp 类型的消息
+	propc chan msgWithResult
+	// 处理 MsgProp 类型的消息出来，其他类型的都接收
+	recvc chan pb.Message
+	// 当节点接收到 EntryConfChange 类型的 entry 记录是，会转换成 ConfChange 并写入该通道等待处理.
+	confc chan pb.ConfChangeV2
+	// 封装了当前集群中所有节点的 id
 	confstatec chan pb.ConfState
-	readyc     chan Ready
-	advancec   chan struct{}
-	tickc      chan struct{}
-	done       chan struct{}
-	stop       chan struct{}
-	status     chan chan Status
+	// 用于向上层返回 Ready 实例
+	readyc chan Ready
+	// 上层模块处理完 Ready 后，会通过 node.advancec 方法向该通道写入信号，通过底层 raft
+	advancec chan struct{}
+	// 和超时选举相关.
+	// 用于接收物理时钟信号，只会后推进选举计时器或心跳计时器
+	tickc chan struct{}
+	// 当检测到 done 通道关闭后，在其上阻塞的 goroutine 会继续执行，并进行相应的关闭操作
+	done chan struct{}
+	// 当 node.Stop() 方法调用后，会向该通道写入信号.
+	stop   chan struct{}
+	status chan chan Status
 
 	rn *RawNode
 }
@@ -300,6 +356,7 @@ func (n *node) Stop() {
 	<-n.done
 }
 
+// 处理事件的入口.
 func (n *node) run() {
 	var propc chan msgWithResult
 	var readyc chan Ready
@@ -313,6 +370,7 @@ func (n *node) run() {
 	for {
 		if advancec != nil {
 			readyc = nil
+			// 由 node 决定 Ready 的生成.
 		} else if n.rn.HasReady() {
 			// Populate a Ready. Note that this Ready is not guaranteed to
 			// actually be handled. We will arm readyc, but there's no guarantee
@@ -322,6 +380,8 @@ func (n *node) run() {
 			// handled first, but it's generally good to emit larger Readys plus
 			// it simplifies testing (by emitting less frequently and more
 			// predictably).
+			// 创建 Ready. 并不保证实际处理此 Ready. 我们可能会改为服务另一个通道，循环，然后再次填充就绪.
+			// 我们可以改为强制首先处理之前的 Ready, 但是发出更大的 Ready 通常是好的，而且它简化了测试.
 			rd = n.rn.readyWithoutAccept()
 			readyc = n.readyc
 		}
@@ -389,12 +449,24 @@ func (n *node) run() {
 			case n.confstatec <- cs:
 			case <-n.done:
 			}
+		// 读取物理时钟，上层应用触发的是物理时间
+		// 然后在 node 中将其转换为逻辑时间(tick)
+		// 心跳时间或选举时间的单位都是 tick(也就是逻辑时间)
 		case <-n.tickc:
 			n.rn.Tick()
+		// 所有 channel 表达式都会被求值、所有被发送的表达式都会被求值. 求值顺序：自上而下、从左到右
+		// 结果是选择一个发送或接收的 channel，无论选择哪一个 case 进行操作，表达式都会被执行.
+		// select 只能用于 channel 的操作(读或写)，而 switch 则更通用
+		// select 的 case 是随机的，而 switch 里的 case 是顺序执行的
+		// select 要注意避免出现死锁，同时也可以自行实现超时机制
+		// select 里没有类似 switch 里的 fallthrough 的用法
+		// select 不能像 switch 一样接收函数或其他表达式
 		case readyc <- rd:
+			// 当准备处理就绪队列时，重置通知
 			n.rn.acceptReady(rd)
 			advancec = n.advancec
 		case <-advancec:
+			// 相当于什么了？相当于当应用层处理完请求后，需要通知底层的 raft 节点结果.
 			n.rn.Advance(rd)
 			rd = Ready{}
 			advancec = nil
@@ -498,6 +570,10 @@ func (n *node) stepWithWaitOption(ctx context.Context, m pb.Message, wait bool) 
 	return nil
 }
 
+// <-chan Ready 防止其他协程乱用此通道，造成隐藏 bug
+// <-chan 只读
+// chan <- 只写
+// close(ch) 关闭
 func (n *node) Ready() <-chan Ready { return n.readyc }
 
 func (n *node) Advance() {

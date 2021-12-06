@@ -42,6 +42,8 @@ func flockLockFile(path string, flag int, perm os.FileMode) (*LockedFile, error)
 	if err != nil {
 		return nil, err
 	}
+	// 在默认情况下，如果另一个进程持有了一把锁，那么调用 syscall.Flock 会被阻塞.
+	// 避免多个进程同时存在.
 	if err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
 		f.Close()
 		return nil, err

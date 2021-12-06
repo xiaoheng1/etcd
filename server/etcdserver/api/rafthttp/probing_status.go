@@ -33,6 +33,7 @@ const (
 var (
 	// proberInterval must be shorter than read timeout.
 	// Or the connection will time-out.
+	// 探测时间比读超时时间要短.
 	proberInterval           = ConnReadTimeout - time.Second
 	statusMonitoringInterval = 30 * time.Second
 	statusErrorInterval      = 5 * time.Second

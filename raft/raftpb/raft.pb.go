@@ -73,25 +73,44 @@ func (EntryType) EnumDescriptor() ([]byte, []int) {
 type MessageType int32
 
 const (
-	MsgHup            MessageType = 0
-	MsgBeat           MessageType = 1
-	MsgProp           MessageType = 2
-	MsgApp            MessageType = 3
-	MsgAppResp        MessageType = 4
-	MsgVote           MessageType = 5
-	MsgVoteResp       MessageType = 6
-	MsgSnap           MessageType = 7
-	MsgHeartbeat      MessageType = 8
-	MsgHeartbeatResp  MessageType = 9
-	MsgUnreachable    MessageType = 10
-	MsgSnapStatus     MessageType = 11
-	MsgCheckQuorum    MessageType = 12
+	// 当 Follower 节点的选举计时器超时，会发送 MsgHup 消息
+	MsgHup MessageType = 0
+	// Leader 发送心跳，主要作用是探活. Follower 接收到 MsgBeat 会重置选举计时器，防止 Follower 发起新一轮选举
+	MsgBeat MessageType = 1
+	// 客户端发到集群的写请求是通过 MsgProp 来表示的
+	MsgProp MessageType = 2
+	// 当一个节点通过选举成为 Leader 时，会发送 MsgApp 消息
+	MsgApp MessageType = 3
+	// MsgApp 的响应消息
+	MsgAppResp MessageType = 4
+	// 当 PreCandidate 状态的节点收到半数以上的投票后，会发起新一轮的选举，即向集群中的其他节点发送 MsgVote 消息.
+	MsgVote MessageType = 5
+	// MsyVote 的响应消息
+	MsgVoteResp MessageType = 6
+	// Leader 向 Follower 发送快照信息
+	MsgSnap MessageType = 7
+	// Leader 发送心跳消息
+	MsgHeartbeat MessageType = 8
+	// 心跳消息的响应
+	MsgHeartbeatResp MessageType = 9
+	// Follower 消息不可达
+	MsgUnreachable MessageType = 10
+	// 如果 Leader 发送 MsgSnap 消息时出现异常，则会调用 Raft 接口发送 MsgUnreachable 和 MsgSnapStatus 消息
+	MsgSnapStatus MessageType = 11
+	// Leader 检测是否保持半数以上的连接
+	MsgCheckQuorum MessageType = 12
+	// Leader 节点转移时使用，本地消息
 	MsgTransferLeader MessageType = 13
-	MsgTimeoutNow     MessageType = 14
-	MsgReadIndex      MessageType = 15
-	MsgReadIndexResp  MessageType = 16
-	MsgPreVote        MessageType = 17
-	MsgPreVoteResp    MessageType = 18
+	// 超时消息，使 Follower 的选举计时器立即过期并发起新一轮的选举
+	MsgTimeoutNow MessageType = 14
+	// 客户端向集群中发起的只读消息
+	MsgReadIndex MessageType = 15
+	// 只读消息的响应
+	MsgReadIndexResp MessageType = 16
+	// 预投票消息
+	MsgPreVote MessageType = 17
+	// 预投票消息的响应
+	MsgPreVoteResp MessageType = 18
 )
 
 var MessageType_name = map[int32]string{

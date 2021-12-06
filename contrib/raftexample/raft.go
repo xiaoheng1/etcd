@@ -17,13 +17,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
-	"net/http"
-	"net/url"
-	"os"
-	"strconv"
-	"time"
-
 	"go.etcd.io/etcd/client/pkg/v3/fileutil"
 	"go.etcd.io/etcd/client/pkg/v3/types"
 	"go.etcd.io/etcd/raft/v3"
@@ -33,8 +26,13 @@ import (
 	stats "go.etcd.io/etcd/server/v3/etcdserver/api/v2stats"
 	"go.etcd.io/etcd/server/v3/storage/wal"
 	"go.etcd.io/etcd/server/v3/storage/wal/walpb"
-
 	"go.uber.org/zap"
+	"log"
+	"net/http"
+	"net/url"
+	"os"
+	"strconv"
+	"time"
 )
 
 type commit struct {
@@ -84,6 +82,7 @@ var defaultSnapshotCount uint64 = 10000
 // provided the proposal channel. All log entries are replayed over the
 // commit channel, followed by a nil message (to indicate the channel is
 // current), then new log entries. To shutdown, close proposeC and read errorC.
+// newRaftNode 发起一个 Raft 实例并返回一个提交的日志条目通道和错误通道.
 func newRaftNode(id int, peers []string, join bool, getSnapshot func() ([]byte, error), proposeC <-chan string,
 	confChangeC <-chan raftpb.ConfChange) (<-chan *commit, <-chan error, <-chan *snap.Snapshotter) {
 
@@ -108,6 +107,8 @@ func newRaftNode(id int, peers []string, join bool, getSnapshot func() ([]byte, 
 
 		logger: zap.NewExample(),
 
+		// make(chan int) 创建无缓冲区，send 数据到 chan 时，在没有协程取出数据的情况下，会阻塞当前协程的运行.
+		// make(chan int, 1) 当有缓冲的时候，可以存 1 个，但是第二次发送的时候就会被阻塞.
 		snapshotterReady: make(chan *snap.Snapshotter, 1),
 		// rest of structure populated after WAL replay
 	}
@@ -290,7 +291,10 @@ func (rc *raftNode) startRaft() {
 		rpeers[i] = raft.Peer{ID: uint64(i + 1)}
 	}
 	c := &raft.Config{
-		ID:                        uint64(rc.id),
+		ID: uint64(rc.id),
+		// ElectionTick 是 HeartbeatTick 的 10 倍.
+		// HeartbeatTick 默认是 100ms
+		// ElectionTick 默认是 1000ms
 		ElectionTick:              10,
 		HeartbeatTick:             1,
 		Storage:                   rc.raftStorage,
@@ -318,10 +322,12 @@ func (rc *raftNode) startRaft() {
 	rc.transport.Start()
 	for i := range rc.peers {
 		if i+1 != rc.id {
+			// 每添加一个 peer，就调用 AddPeer 添加一个 peer.
 			rc.transport.AddPeer(types.ID(i+1), []string{rc.peers[i]})
 		}
 	}
 
+	// 主要处理 raft 内部的网络传输.
 	go rc.serveRaft()
 	go rc.serveChannels()
 }
@@ -411,12 +417,15 @@ func (rc *raftNode) serveChannels() {
 	defer rc.wal.Close()
 
 	ticker := time.NewTicker(100 * time.Millisecond)
+	// 如果修改为 ticker := &time.Ticker{} 这种格式，那么将不会发起选举.
+	//ticker := &time.Ticker{}
 	defer ticker.Stop()
 
 	// send proposals over raft
 	go func() {
 		confChangeCount := uint64(0)
 
+		// 处理提案和配置变更
 		for rc.proposeC != nil && rc.confChangeC != nil {
 			select {
 			case prop, ok := <-rc.proposeC:
@@ -444,19 +453,24 @@ func (rc *raftNode) serveChannels() {
 	// event loop on raft state machine updates
 	for {
 		select {
+		// 推进时钟
 		case <-ticker.C:
 			rc.node.Tick()
 
 		// store raft entries to wal, then publish over commit channel
 		case rd := <-rc.node.Ready():
+			// 读到了数据，先持久化.
 			rc.wal.Save(rd.HardState, rd.Entries)
 			if !raft.IsEmptySnap(rd.Snapshot) {
 				rc.saveSnap(rd.Snapshot)
 				rc.raftStorage.ApplySnapshot(rd.Snapshot)
 				rc.publishSnapshot(rd.Snapshot)
 			}
+			// 保存日志
 			rc.raftStorage.Append(rd.Entries)
+			// 通过网络发送出去.
 			rc.transport.Send(rd.Messages)
+			// 如果日志条目中有新的提交日志，则提交到状态机那边执行.
 			applyDoneC, ok := rc.publishEntries(rc.entriesToApply(rd.CommittedEntries))
 			if !ok {
 				rc.stop()
@@ -487,6 +501,8 @@ func (rc *raftNode) serveRaft() {
 		log.Fatalf("raftexample: Failed to listen rafthttp (%v)", err)
 	}
 
+	// http.Server 会为每个连接启动一个独立的后台 goroutine 处理该连接上的请求.
+	// 每个请求的处理逻辑封装在 http.Server.Handler 中.
 	err = (&http.Server{Handler: rc.transport.Handler()}).Serve(ln)
 	select {
 	case <-rc.httpstopc:
@@ -496,6 +512,7 @@ func (rc *raftNode) serveRaft() {
 	close(rc.httpdonec)
 }
 
+// 收到消息后，直接将消息交给底层的 raft 模块处理.
 func (rc *raftNode) Process(ctx context.Context, m raftpb.Message) error {
 	return rc.node.Step(ctx, m)
 }

@@ -34,6 +34,16 @@ import (
 	"go.uber.org/zap"
 )
 
+// net.http 基本概念：
+// ResponseWriter： 生成 Response 的接口
+// Handler：处理请求和生成返回的接口
+// ServeMux: 路由，后面会说到 ServeMux 也是一种 handler
+// Conn：网络连接
+// Flusher：被 Handler 调用来将写缓存中的数据推给客户端
+//
+// see https://www.cnblogs.com/yjf512/archive/2012/08/22/2650873.html
+// see https://vimsky.com/examples/detail/golang-ex-net.http-Flusher-Flush-method.html
+
 const (
 	// connReadLimitByte limits the number of bytes
 	// a single read can read out.
@@ -345,6 +355,26 @@ func newStreamHandler(t *Transport, pg peerGetter, r Raft, id, cid types.ID) htt
 	return h
 }
 
+// 对于 golang 来说，实现一个简单的 http server 非常容易.
+// 基于 http 构建的网络应用包含两端，client and server/
+// 两端交互行为包括从 client 发出 request, server 接收 request 进行处理并返回 response 以及 client 处理 response.
+//                                handler
+// client -> request -> router -> handler -> response -> client
+//                                handler
+// 服务端在接收到请求时，首先会进入路由，这是一个 multiplexer. 路由的工作在于为这个
+// request 找到对应的处理器，处理器对 request 进行处理，并构建 response.
+// http serer 常见有两种形式：
+// 1.
+// 		http.HandleFunc("/", indexHandler)
+// 		http.ListenAndServe(":8000", nil)
+// 2.
+//		http.Handle("/", &indexHandler{content: "hello world"})
+//		http.ListenAndServe(":8001", nil)
+//
+// http.HandleFunc 和 http.Handle 都是用于注册路由，可以发现两者的区别在于第二个参数，
+// 前者是一个具有 func(w http.ResponseWriter, r *http.Requests) 签名的函数.
+// 后者是一个结构体，该结构体实现了 func(w http.ResponseWriter, r *http.Requests) 签名的方法.
+// see https://studygolang.com/articles/24738?fr=sidebar
 func (h *streamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" {
 		w.Header().Set("Allow", "GET")
@@ -400,6 +430,9 @@ func (h *streamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "removed member", http.StatusGone)
 		return
 	}
+	// NOTE：我好像明白了 attachOutgoingConn 其实并不影响并发性
+	// 它用的是 from 取到的 peer, 对于本节点来说，它是 to，所以这里是支持多节点连接的.
+	// see https://juejin.cn/post/6844903665975689229
 	p := h.peerGetter.Get(from)
 	if p == nil {
 		// This may happen in following cases:
@@ -439,6 +472,7 @@ func (h *streamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.(http.Flusher).Flush()
 
 	c := newCloseNotifier()
+	// 在接收到外部请求的时候会创建 conn
 	conn := &outgoingConn{
 		t:       t,
 		Writer:  w,
@@ -447,6 +481,9 @@ func (h *streamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		localID: h.tr.ID,
 		peerID:  from,
 	}
+	// 当连接建立后，会封装成 outgoingConn
+	// outgoingConn 其实是对网络连接的一层封装，其中记录了当前连接使用的协议版本
+	// 以及用于关闭连接的 Flusher 和 Closer 等信息.
 	p.attachOutgoingConn(conn)
 	<-c.closeNotify()
 }

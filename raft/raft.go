@@ -31,11 +31,23 @@ import (
 	"go.etcd.io/etcd/raft/v3/tracker"
 )
 
+// 说下 ectd 和 JRaft 给我的感觉中的最大不同：
+// JRaft 高度模块化，就是每一个东西负责一件事，都有自己的组件，模块
+// etcd 是尽最大努力复用.
+// 整体上看，我更喜欢 JRaft 的编码风格，特别清晰.
+
+// raft 库只是封装了操作，它只提供了方法，上层模块来组织这些方法，使其作为一个 raft 整体正常运行.
+
+// 本地 Msg，term = 0. 这种 Msg 并不会经过网络发送给 Peer,
+// 只是将 Node 接口的一些请求转换成 Raft StateMachine 统一处理的 Msg.
+// 非本地 Msg，term != 0, 这种 Msg 会经过网络发送给 Peer.
+
 // None is a placeholder node ID used when there is no leader.
 const None uint64 = 0
 const noLimit = math.MaxUint64
 
 // Possible values for StateType.
+// raft 节点的状态值 StateFollower 从 0 开始，numStates 为 4
 const (
 	StateFollower StateType = iota
 	StateCandidate
@@ -44,6 +56,8 @@ const (
 	numStates
 )
 
+// 定义采用线性一致性读还是采用租约
+// 0 代表采用线性一致性读，1 代表采用租约(可能存在时钟漂移的问题)
 type ReadOnlyOption int
 
 const (
@@ -58,6 +72,7 @@ const (
 	ReadOnlyLeaseBased
 )
 
+// 和预投票相关
 // Possible values for CampaignType
 const (
 	// campaignPreElection represents the first phase of a normal election when
@@ -78,10 +93,13 @@ var ErrProposalDropped = errors.New("raft proposal dropped")
 // synchronization among multiple raft groups. Only the methods needed
 // by the code are exposed (e.g. Intn).
 type lockedRand struct {
-	mu   sync.Mutex
+	// 互斥锁
+	mu sync.Mutex
+	// 产生随机数
 	rand *rand.Rand
 }
 
+// 产生随机数
 func (r *lockedRand) Intn(n int) int {
 	r.mu.Lock()
 	v := r.rand.Intn(n)
@@ -101,6 +119,7 @@ type CampaignType string
 // StateType represents the role of a node in a cluster.
 type StateType uint64
 
+// 节点状态
 var stmap = [...]string{
 	"StateFollower",
 	"StateCandidate",
@@ -112,6 +131,7 @@ func (st StateType) String() string {
 	return stmap[uint64(st)]
 }
 
+// 启动 raft 节点的配置.
 // Config contains the parameters to start a raft.
 type Config struct {
 	// ID is the identity of the local raft. ID cannot be 0.
@@ -198,6 +218,9 @@ type Config struct {
 	DisableProposalForwarding bool
 }
 
+// func (c app) example() 和 func (c * app) example() 的区别
+// func (c * app) c 操作对象本身
+// func (c app) c 为局部变量，对其修改不影响对象的值
 func (c *Config) validate() error {
 	if c.ID == None {
 		return errors.New("cannot use none as id")
@@ -240,22 +263,30 @@ func (c *Config) validate() error {
 	return nil
 }
 
+// raft 结构
 type raft struct {
+	// 当前节点在集群中的 id
 	id uint64
 
+	// 很关键的属性，任期
 	Term uint64
 	Vote uint64
 
 	readStates []ReadState
 
 	// the log
+	// 本地日志
 	raftLog *raftLog
 
 	maxMsgSize         uint64
 	maxUncommittedSize uint64
 	// TODO(tbg): rename to trk.
+	// 封装了 next、match 相关数据
+	// 在 JRaft 中，这块的内容交给 Replicator 处理了.
 	prs tracker.ProgressTracker
 
+	// 当前节点在集群中的角色
+	// 比如是 Follower、Leader、Candidate 等
 	state StateType
 
 	// isLearner is true if the local raft node is a learner.
@@ -292,8 +323,10 @@ type raft struct {
 	// only leader keeps heartbeatElapsed.
 	heartbeatElapsed int
 
+	// 每隔一段时间，Leader 节点尝试连接集群内的其他节点，当发现自己连接的集群数没有超过半数，则主动切换为 Follower.
 	checkQuorum bool
-	preVote     bool
+	// 是否发起预选举
+	preVote bool
 
 	heartbeatTimeout int
 	electionTimeout  int
@@ -303,7 +336,10 @@ type raft struct {
 	randomizedElectionTimeout int
 	disableProposalForwarding bool
 
+	// tick 函数
+	// 对于 follower 此值叫做 tickElection
 	tick func()
+	// 对于 follower 此值叫做 stepFollower
 	step stepFunc
 
 	logger Logger
@@ -357,6 +393,12 @@ func newRaft(c *Config) *raft {
 	if c.Applied > 0 {
 		raftlog.appliedTo(c.Applied)
 	}
+
+	// 这一步很关键，当 newRaft 后，将自生状态设置为 follower.
+	// 成为 follower 后，会设置相关属性，比如：
+	// 1. step 为 stepFollower
+	// 2. 重置 term
+	// 3. tick 为 tickElection
 	r.becomeFollower(r.Term, None)
 
 	var nodesStrs []string
@@ -369,6 +411,7 @@ func newRaft(c *Config) *raft {
 	return r
 }
 
+// 判断是否有 leader
 func (r *raft) hasLeader() bool { return r.lead != None }
 
 func (r *raft) softState() *SoftState { return &SoftState{Lead: r.lead, RaftState: r.state} }
@@ -415,6 +458,9 @@ func (r *raft) send(m pb.Message) {
 			m.Term = r.Term
 		}
 	}
+	// etcd raft 模块并没有提供网络层的相关实现，而是将待发送消息封装进 Ready 实例返回给上层模块
+	// 然后由上层模块完成决定如何将这些消息发送到集群中的其他节点.
+	// etcd 将网络层的相关实现独立成了一个单独模块，也就是 etcd-rafthttp.
 	r.msgs = append(r.msgs, m)
 }
 
@@ -645,8 +691,11 @@ func (r *raft) appendEntry(es ...pb.Entry) (accepted bool) {
 func (r *raft) tickElection() {
 	r.electionElapsed++
 
+	// Process 是 leader 维护的 follower 的状态
+	// 这个跟 JRaft 中的 Replicator 的角色差不多.
 	if r.promotable() && r.pastElectionTimeout() {
 		r.electionElapsed = 0
+		// 超时，发起选举.
 		if err := r.Step(pb.Message{From: r.id, Type: pb.MsgHup}); err != nil {
 			r.logger.Debugf("error occurred during election: %v", err)
 		}
@@ -683,6 +732,7 @@ func (r *raft) tickHeartbeat() {
 	}
 }
 
+// becomeFollower 会在 newRaft 的时候首先完成.
 func (r *raft) becomeFollower(term uint64, lead uint64) {
 	r.step = stepFollower
 	r.reset(term)
@@ -692,12 +742,20 @@ func (r *raft) becomeFollower(term uint64, lead uint64) {
 	r.logger.Infof("%x became follower at term %d", r.id, r.Term)
 }
 
+// 变成候选者
+// 其实 etcd 和 JRaft 定时任务的最大区别在于
+// 在 JRaft 中，是有多种定时器的，比如 VoteTimer、ElectionTimer、StepDownTimer、SnapshotTimer
+// 但是在 etcd 中，它只有一个定时任务推进.
+// 为什么一个就够了了？
+// 因为同一时刻只会存在一个，但是 StepDownTimer 是变成 leader 后就一直存在的.
+// 所以在 etcd 中就单独做了一个检查.
 func (r *raft) becomeCandidate() {
 	// TODO(xiangli) remove the panic when the raft implementation is stable
 	if r.state == StateLeader {
 		panic("invalid transition [leader -> candidate]")
 	}
 	r.step = stepCandidate
+	// term + 1
 	r.reset(r.Term + 1)
 	r.tick = r.tickElection
 	r.Vote = r.id
@@ -758,15 +816,18 @@ func (r *raft) becomeLeader() {
 }
 
 func (r *raft) hup(t CampaignType) {
+	// 如果本身是 leader 则直接返回
 	if r.state == StateLeader {
 		r.logger.Debugf("%x ignoring MsgHup because already leader", r.id)
 		return
 	}
 
+	// 看该节点能否参与竞选.
 	if !r.promotable() {
 		r.logger.Warningf("%x is unpromotable and can not campaign", r.id)
 		return
 	}
+	// applied <= committed <= logIndex
 	ents, err := r.raftLog.slice(r.raftLog.applied+1, r.raftLog.committed+1, noLimit)
 	if err != nil {
 		r.logger.Panicf("unexpected error getting unapplied entries (%v)", err)
@@ -796,10 +857,12 @@ func (r *raft) campaign(t CampaignType) {
 		// PreVote RPCs are sent for the next term before we've incremented r.Term.
 		term = r.Term + 1
 	} else {
+		// 竞选
 		r.becomeCandidate()
 		voteMsg = pb.MsgVote
 		term = r.Term
 	}
+	// 判断当前节点把表投给自己之后，是否得到半数以上的投票
 	if _, _, res := r.poll(r.id, voteRespMsgType(voteMsg), true); res == quorum.VoteWon {
 		// We won the election after voting for ourselves (which must mean that
 		// this is a single-node cluster). Advance to the next state.
@@ -819,6 +882,7 @@ func (r *raft) campaign(t CampaignType) {
 		}
 		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	}
+	// 开始向其他节点发送投票
 	for _, id := range ids {
 		if id == r.id {
 			continue
@@ -830,6 +894,7 @@ func (r *raft) campaign(t CampaignType) {
 		if t == campaignTransfer {
 			ctx = []byte(t)
 		}
+		// MsgVote
 		r.send(pb.Message{Term: term, To: id, Type: voteMsg, Index: r.raftLog.lastIndex(), LogTerm: r.raftLog.lastTerm(), Context: ctx})
 	}
 }
@@ -844,8 +909,12 @@ func (r *raft) poll(id uint64, t pb.MessageType, v bool) (granted int, rejected 
 	return r.prs.TallyVotes()
 }
 
+// 选举. Step 在 election 方法中进行调用.
+// 在构造 m 的时候很多是这么传入参数的：pb.Message{From: r.id, Type: pb.MsgHup}
+// 所以 term 的默认值为 0.
 func (r *raft) Step(m pb.Message) error {
 	// Handle the message term, which may result in our stepping down to a follower.
+	// 处理消息 term，这可能会导致我们降级为 follower.
 	switch {
 	case m.Term == 0:
 		// local message
@@ -856,6 +925,7 @@ func (r *raft) Step(m pb.Message) error {
 			if !force && inLease {
 				// If a server receives a RequestVote request within the minimum election timeout
 				// of hearing from a current leader, it does not update its term or grant its vote
+				// NOTE: 这个应该是为了解决网络非对称分区的问题.
 				r.logger.Infof("%x [logterm: %d, index: %d, vote: %x] ignored %s from %x [logterm: %d, index: %d] at term %d: lease is not expired (remaining ticks: %d)",
 					r.id, r.raftLog.lastTerm(), r.raftLog.lastIndex(), r.Vote, m.Type, m.From, m.LogTerm, m.Index, r.Term, r.electionTimeout-r.electionElapsed)
 				return nil
@@ -873,9 +943,11 @@ func (r *raft) Step(m pb.Message) error {
 		default:
 			r.logger.Infof("%x [term: %d] received a %s message with higher term from %x [term: %d]",
 				r.id, r.Term, m.Type, m.From, m.Term)
+			// 收到更高的投票，将自己变为 follower.
 			if m.Type == pb.MsgApp || m.Type == pb.MsgHeartbeat || m.Type == pb.MsgSnap {
 				r.becomeFollower(m.Term, m.From)
 			} else {
+				// 下面是投票场景，所以 lead 被设置为 None 了.
 				r.becomeFollower(m.Term, None)
 			}
 		}
@@ -920,13 +992,15 @@ func (r *raft) Step(m pb.Message) error {
 	}
 
 	switch m.Type {
+	// 超时触发
 	case pb.MsgHup:
+		// 选举逻辑.
 		if r.preVote {
 			r.hup(campaignPreElection)
 		} else {
 			r.hup(campaignElection)
 		}
-
+	// 选举
 	case pb.MsgVote, pb.MsgPreVote:
 		// We can vote if this is a repeat of a vote we've already cast...
 		canVote := r.Vote == m.From ||
@@ -1397,6 +1471,8 @@ func stepCandidate(r *raft, m pb.Message) error {
 		r.becomeFollower(m.Term, m.From) // always m.Term == r.Term
 		r.handleSnapshot(m)
 	case myVoteRespType:
+		// 收到 MsgVoteResp 消息后，看自己是否能成为 leader.
+		// 它是非阻塞的.
 		gr, rj, res := r.poll(m.From, m.Type, !m.Reject)
 		r.logger.Infof("%x has received %d %s votes and %d vote rejections", r.id, gr, m.Type, rj)
 		switch res {

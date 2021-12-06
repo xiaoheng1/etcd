@@ -21,6 +21,7 @@ import (
 	"go.etcd.io/etcd/client/pkg/v3/types"
 )
 
+// 用来选择可用的 url
 type urlPicker struct {
 	mu     sync.Mutex // guards urls and picked
 	urls   types.URLs
